@@ -1,4 +1,215 @@
-PS C:\Users\腐朽的钉螺> & "D:\leidian\LDPlayer14\adb.exe" -P 5037 devices -l
-09-04 11:05:10.703 30688 51944 E adb.exe : adb_trace.cpp:137 Unknown trace flag: adb,sockets,transport
-List of devices attached
-85r445pzgiin7trg       device product:pissarro model:21091116C device:pissarro transport_id:1
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>搞笑文案抽取器</title>
+<style>
+body{font-family:sans-serif;margin:0;padding:16px;background:#f6f6f6;color:#333}
+h1{font-size:20px}
+button{background:#007aff;color:#fff;border:none;padding:10px 14px;border-radius:8px;font-size:16px;margin:4px}
+button.gray{background:#888}
+textarea{width:100%;height:120px;font-size:14px;box-sizing:border-box}
+.card{background:#fff;border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.result{border:2px dashed #aaa;border-radius:12px;padding:20px;min-height:100px;font-size:22px;white-space:pre-wrap;word-break:break-word}
+.meta{color:#888;font-size:14px}
+</style>
+</head>
+<body>
+<h1>搞笑文案抽取器</h1>
+<div id="setup">
+  <div class="card">
+    <h3>1. 文案库（每行一条：分类|内容）</h3>
+    <textarea id="itemsInput" placeholder="例如：&#10;B|我长得这么帅为什么没有女朋友&#10;A|别人早恋我早睡，我是养生小宝贝"></textarea>
+    <h3>2. 抽取阶段规则（每行一条：次数|必须抽完的分类|允许抽取的分类）</h3>
+    <textarea id="stagesInput" placeholder="例如：&#10;20|B|A,C&#10;0||A,C"></textarea>
+    <div class="meta">次数填 0 表示把剩余允许分类全部抽完。不填规则则全部随机不重复。</div>
+    <button onclick="saveSettings()">保存设置并清空进度</button>
+  </div>
+</div>
+
+<div class="card">
+  <div id="resultBox" class="result">点击开始</div>
+  <div id="progress" class="meta"></div>
+  <button onclick="nextOne()">开始/下一条</button>
+  <button class="gray" onclick="resetRound()">结束本轮/下一轮</button>
+  <button class="gray" onclick="exportData()">导出JSON</button>
+  <label class="gray" style="display:inline-block;margin:4px">导入<input type="file" id="importFile" onchange="importData(this)"></label>
+</div>
+
+<script>
+const LS = {
+  items: 'gag_items_v1',
+  stages: 'gag_stages_v1',
+  plan: 'gag_plan_v1',
+  index: 'gag_index_v1'
+};
+let items = JSON.parse(localStorage.getItem(LS.items) || '[]');
+let stages = JSON.parse(localStorage.getItem(LS.stages) || '[]');
+let plan = JSON.parse(localStorage.getItem(LS.plan) || '[]');
+let index = parseInt(localStorage.getItem(LS.index) || '0', 10);
+
+function saveLS(){
+  localStorage.setItem(LS.items, JSON.stringify(items));
+  localStorage.setItem(LS.stages, JSON.stringify(stages));
+  localStorage.setItem(LS.plan, JSON.stringify(plan));
+  localStorage.setItem(LS.index, String(index));
+}
+
+function shuffle(arr){
+  const a = arr.slice();
+  for(let i=a.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function parseSettings(){
+  const text = document.getElementById('itemsInput').value.trim();
+  const lines = text.split(/\n+/).filter(l=>l.trim());
+  if(lines.length === 0){ alert('请至少输入一条文案'); return false; }
+  items = lines.map((line, idx)=>{
+    const parts = line.split('|');
+    const cat = (parts[0]||'默认').trim();
+    const content = (parts.slice(1).join('|')||'').trim();
+    if(!content) { alert('第'+(idx+1)+'行缺少内容'); return null; }
+    return {id:'id_'+Date.now()+'_'+idx+'_'+Math.random(), cat, text:content};
+  }).filter(Boolean);
+  const stText = document.getElementById('stagesInput').value.trim();
+  stages = [];
+  if(stText){
+    const stLines = stText.split(/\n+/).filter(l=>l.trim());
+    for(const line of stLines){
+      const p = line.split('|');
+      const count = parseInt(p[0], 10);
+      if(isNaN(count)) continue;
+      const mustFinish = (p[1]||'').split(',').map(s=>s.trim()).filter(Boolean);
+      const allowFrom = (p[2]||'').split(',').map(s=>s.trim()).filter(Boolean);
+      stages.push({count, mustFinish, allowFrom});
+    }
+  }
+  resetPlanOnly();
+  saveLS();
+  alert('已保存：'+items.length+'条文案，'+stages.length+'个阶段规则');
+  return true;
+}
+
+function saveSettings(){
+  parseSettings();
+}
+
+function resetPlanOnly(){
+  plan = [];
+  index = 0;
+}
+
+function resetRound(){
+  if(!items.length){ alert('请先编辑保存文案库'); return; }
+  resetPlanOnly();
+  saveLS();
+  document.getElementById('resultBox').textContent = '新一轮已准备好，点击开始';
+  updateProgress();
+}
+
+function buildPlan(){
+  if(!items.length) return [];
+  let unused = new Set(items.map(i=>i.id));
+  const newPlan = [];
+  for(const st of stages){
+    const mustItems = items.filter(i=>unused.has(i.id) && st.mustFinish.includes(i.cat));
+    if(mustItems.length > st.count){
+      throw new Error('阶段要求抽完分类['+st.mustFinish.join(',')+']，但剩余'+mustItems.length+'条，超过本阶段次数'+st.count);
+    }
+    const fillCount = st.count - mustItems.length;
+    let fillItems = [];
+    if(fillCount > 0){
+      const fillPool = items.filter(i=>unused.has(i.id) && st.allowFrom.includes(i.cat) && !mustItems.includes(i));
+      if(fillPool.length < fillCount){
+        throw new Error('阶段需要填充'+fillCount+'条，但允许分类['+st.allowFrom.join(',')+']剩余不足');
+      }
+      fillItems = shuffle(fillPool).slice(0, fillCount);
+    }
+    const seq = shuffle(mustItems.concat(fillItems));
+    seq.forEach(i=>unused.delete(i.id));
+    newPlan.push(...seq);
+  }
+  // 剩余
+  const rest = shuffle(items.filter(i=>unused.has(i.id)));
+  newPlan.push(...rest);
+  return newPlan;
+}
+
+function updateProgress(){
+  const remaining = plan.length - index;
+  const total = plan.length;
+  const msg = total ? ('本轮计划共'+total+'条，已抽'+index+'条，剩余'+remaining+'条') : '尚未开始';
+  document.getElementById('progress').textContent = msg;
+}
+
+function nextOne(){
+  if(!items.length){ alert('请先编辑保存文案库'); return; }
+  if(plan.length === 0 || index >= plan.length){
+    try{
+      plan = buildPlan();
+      index = 0;
+      saveLS();
+    }catch(e){
+      alert(e.message);
+      return;
+    }
+  }
+  if(index < plan.length){
+    const item = items.find(i=>i.id === plan[index]);
+    document.getElementById('resultBox').innerHTML = '<div>'+item.text.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</div><div class="meta">分类：'+item.cat+'</div>';
+    index++;
+    saveLS();
+  } else {
+    document.getElementById('resultBox').textContent = '🎉 本轮已抽完！';
+  }
+  updateProgress();
+}
+
+function exportData(){
+  const data = {items, stages, plan, index};
+  const blob = new Blob([JSON.stringify(data,null,2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '搞笑文案抽取器数据.json';
+  a.click();
+}
+
+function importData(input){
+  const file = input.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e=>{
+    try{
+      const data = JSON.parse(e.target.result);
+      items = data.items || [];
+      stages = data.stages || [];
+      plan = data.plan || [];
+      index = data.index || 0;
+      saveLS();
+      document.getElementById('itemsInput').value = items.map(i=>i.cat+'|'+i.text).join('\n');
+      document.getElementById('stagesInput').value = stages.map(s=>s.count+'|'+s.mustFinish.join(',')+'|'+s.allowFrom.join(',')).join('\n');
+      updateProgress();
+      alert('导入成功');
+    }catch(err){ alert('导入失败：'+err.message); }
+  };
+  reader.readAsText(file);
+}
+
+// 初始载入
+(function init(){
+  if(items.length){
+    document.getElementById('itemsInput').value = items.map(i=>i.cat+'|'+i.text).join('\n');
+  }
+  if(stages.length){
+    document.getElementById('stagesInput').value = stages.map(s=>s.count+'|'+s.mustFinish.join(',')+'|'+s.allowFrom.join(',')).join('\n');
+  }
+  updateProgress();
+})();
+</script>
+</body>
+</html>
